@@ -1,0 +1,863 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(GSVA)
+library(GSEABase)
+library(survival)
+
+H_ESTR_EARLY <- as.character(unlist(geneIds(Hset['HALLMARK_ESTROGEN_RESPONSE_EARLY'])))
+H_ESTR_LATE <- as.character(unlist(geneIds(Hset['HALLMARK_ESTROGEN_RESPONSE_LATE'])))
+
+#### Used ENDORSE and E2 in prediction model ####
+metabric.s <- t(scale(t(metabric.exp)))
+
+saveRDS(metabric.s, file="./../Data/metabric.s.RDS")
+
+MB.ENDORSE <- gsva(metabric.s, gset.idx.list = list("ENDORSE"=ENDORSE, 
+                                                    "HALLMARK_ESTROGEN_RESPONSE_EARLY" = H_ESTR_EARLY, 
+                                                    "HALLMARK_ESTROGEN_RESPONSE_LATE" = H_ESTR_LATE),
+                   verbose=TRUE, kcdf="Gaussian", method='ssgsea', ssgsea.norm=T)
+
+df.E2MB <- data.frame('Time'=metabric.annotV2$OS_MONTHS, 
+                 'Event'=as.numeric(metabric.annotV2$OS_EVENT), 
+                 t(MB.ENDORSE))
+
+##### Cox models using RMS package #####
+library(rms)
+
+model.0 <- cph(Surv(Time, Event) ~ ENDORSE, data=df.E2MB, x=T, y=T, surv = T)
+#model.1 <- cph(Surv(Time, Event) ~ ENDORSE + E2, data=df.E2MB, x=T, y=T)
+#model.2 <- cph(Surv(Time, Event) ~ ENDORSE + E2 + HALLMARK_ESTROGEN_RESPONSE_EARLY, data=df.E2MB, x=T, y=T)
+#model.3 <- cph(Surv(Time, Event) ~ ENDORSE + E2 + HALLMARK_ESTROGEN_RESPONSE_EARLY + HALLMARK_ESTROGEN_RESPONSE_LATE, data=df.E2MB, x=T, y=T)
+#model.4 <- cph(Surv(Time, Event) ~ ENDORSE + HALLMARK_ESTROGEN_RESPONSE_EARLY + HALLMARK_ESTROGEN_RESPONSE_LATE, data=df.E2MB,
+#               x=T, y=T)
+model.5 <- cph(Surv(Time, Event) ~ HALLMARK_ESTROGEN_RESPONSE_EARLY, data=df.E2MB,
+               x=T, y=T, surv = T)
+model.6 <- cph(Surv(Time, Event) ~ ENDORSE + HALLMARK_ESTROGEN_RESPONSE_EARLY, data=df.E2MB, 
+               x=T, y=T, surv = T) ### Chosen one ################# 
+
+# Crossvalidation for Cox models 
+set.seed(1234)
+validate(model.0, method='boot', B=150)
+#validate(model.1, method='boot', B=20)
+#validate(model.2, method='boot', B=20)
+#validate(model.3, method='boot', B=20)
+#validate(model.4, method='boot', B=150)
+validate(model.5, method='boot', B=150)
+validate(model.6, method='boot', B=150)
+
+# Table of predictions 
+ddist <- datadist(df.E2MB)
+options(datadist='ddist')
+
+pred.0 <- Predict(model.0, time = 120)
+#pred.1 <- Predict(model.1, time = 120)
+#pred.2 <- Predict(model.2, time = 120)
+#pred.3 <- Predict(model.3, time = 120)
+#pred.4 <- Predict(model.4, time = 120)
+pred.5 <- Predict(model.5, time = 120)
+pred.6 <- Predict(model.6, time = 120)
+
+##### Cox models using Survival package ######
+cp.0 <- coxph(Surv(Time, Event) ~ ENDORSE, data=df.E2MB, x=T)
+#cp.1 <- coxph(Surv(Time, Event) ~ ENDORSE + E2, data=df.E2MB)
+#cp.2 <- coxph(Surv(Time, Event) ~ ENDORSE + E2 + HALLMARK_ESTROGEN_RESPONSE_EARLY, data=df.E2MB)
+#cp.3 <- coxph(Surv(Time, Event) ~ ENDORSE + E2 + HALLMARK_ESTROGEN_RESPONSE_EARLY + HALLMARK_ESTROGEN_RESPONSE_LATE, data=df.E2MB)
+#cp.4 <- coxph(Surv(Time, Event) ~ ENDORSE + HALLMARK_ESTROGEN_RESPONSE_EARLY + HALLMARK_ESTROGEN_RESPONSE_LATE, data=df.E2MB, x=T)
+cp.5 <- coxph(Surv(Time, Event) ~ HALLMARK_ESTROGEN_RESPONSE_EARLY, data=df.E2MB, x=T)
+cp.6 <- coxph(Surv(Time, Event) ~ ENDORSE + HALLMARK_ESTROGEN_RESPONSE_EARLY, data=df.E2MB, x=T) ### Chosen one ################# 
+
+pdf("./../Figures/METABRIC_pred.0.pdf", height = 3, width=3.5)
+plot(pred.0, ylab="10-year survival probability", strip=F, lwd=3)
+dev.off()
+
+pdf("./../Figures/METABRIC_pred.5.pdf", height = 3, width=3.5)
+plot(pred.5, ylab="10-year survival probability", strip=F, lwd=3)
+dev.off()
+
+pdf("./../Figures/METABRIC_pred.6.pdf", height = 3, width=6)
+plot(pred.6, ylab="10-year survival probability", strip=F, lwd=3)
+dev.off()
+
+ggsurvplot(survfit(cp.0), data=df.E2MB)
+
+```
+
+
+```{r}
+library(survminer)
+
+E2.risk <- predict(cp.6, type='risk')
+E2.risk.grps <- MakeRiskGrp(E2.risk)
+E2.Surv.df <- data.frame("Time"=metabric.annotV2$OS_MONTHS, 
+                         "Event"=as.numeric(metabric.annotV2$OS_EVENT), 
+                         "Group"=E2.risk.grps)
+fit.E2 <- survfit(Surv(Time, Event) ~ Group, data=E2.Surv.df)
+
+P.MB <- ggsurvplot(fit.E2, data=E2.Surv.df, palette="jco", 
+                  censor.shape="|", censor.size=2, 
+                  break.time.by=60, 
+                  legend.title="ENDORSE", legend.labs=c("Low risk", "Medium risk", "High risk"),
+                  surv.median.line = "hv",
+                  risk.table=T, 
+                  ggtheme=theme_classic2(base_size = 14))
+
+pdf("./../Figures/Fit_METABRIC_ENDORSEv2.pdf", width=6, height=6)
+print(P.MB)
+dev.off()
+
+survdiff(Surv(Time, Event) ~ Group, data=E2.Surv.df)
+summary(coxph(Surv(Time, Event) ~ Group, data=E2.Surv.df))
+
+```
+
+
+```{r External Signatures}
+############# Apply TransCONFIRM signature #########################
+metabric.TransCONFIRM <- TransCONFIRM(t(metabric.s))
+
+############# Apply SET signature #########################
+metabric.SET <- SET_Score(t(metabric.s))
+
+############# Apply ODX scores #########################
+metabric.ODX <- ODX_RS(scale(t(metabric.s)))
+metabric.ODX.cat <- array(data=0, dim=length(metabric.ODX))
+metabric.ODX.cat[which(metabric.ODX > quantile(metabric.ODX, 0.25))] <- 1
+
+df.E2MB <- cbind(df.E2MB, "TransCONFIRM"=metabric.TransCONFIRM, "SET"=metabric.SET, 
+                 "ODX"=metabric.ODX,"ODX_Cat"=metabric.ODX.cat)
+
+cp.mbTC <- coxph(Surv(Time, Event) ~ TransCONFIRM, data=df.E2MB, x=T)
+cp.mbSET <- coxph(Surv(Time, Event) ~ SET, data=df.E2MB, x=T)
+cp.mbODX <- coxph(Surv(Time, Event) ~ ODX, data=df.E2MB, x=T)
+cp.mbODXCat <- coxph(Surv(Time, Event) ~ as.factor(ODX_Cat), data=df.E2MB, x=T)
+
+cph.mbTC <- cph(Surv(Time, Event) ~ TransCONFIRM, data=df.E2MB, x=T, y=T)
+cph.mbSET <- cph(Surv(Time, Event) ~ SET, data=df.E2MB, x=T, y=T)
+cph.mbODX <- cph(Surv(Time, Event) ~ ODX, data=df.E2MB, x=T, y=T)
+cph.mbODXCat <- cph(Surv(Time, Event) ~ ODX_Cat, data=df.E2MB, x=T, y=T)
+
+set.seed(1234)
+validate(cph.mbTC, method='boot', B=150)
+validate(cph.mbSET, method='boot', B=150)
+validate(cph.mbODX, method='boot', B=150)
+validate(cph.mbODXCat, method='boot', B=150)
+
+```
+
+```{r METABRIC covariates}
+#Other classifiers 
+x <- match(colnames(metabric.s), MB.annot.extra$Patient.ID)
+df.E2MB <- data.frame(df.E2MB, 
+                        'TumorGrade'=MB.annot.extra$Neoplasm.Histologic.Grade[x],
+                        'MutationCount'=MB.annot.extra$Mutation.Count[x],
+                        'PAM50'=MB.annot.extra$Pam50...Claudin.low.subtype[x],
+                        'IntClust'=MB.annot.extra$Integrative.Cluster[x])
+df.E2MB$IntClust <- droplevels(df.E2MB$IntClust)
+
+cp.mbgrade <- coxph(Surv(Time, Event) ~ TumorGrade, data=df.E2MB, x=T)
+cp.mbmutcount <- coxph(Surv(Time, Event) ~ MutationCount, data=df.E2MB, x=T)
+cp.mbPAM50 <- coxph(Surv(Time, Event) ~ PAM50, data=df.E2MB, x=T)
+cp.mbIntClust <- coxph(Surv(Time, Event) ~ IntClust, data=df.E2MB, x=T)
+
+cph.mbgrade <- cph(Surv(Time, Event) ~ TumorGrade, data=df.E2MB, x=T, y=T)
+cph.mbmutcount <- cph(Surv(Time, Event) ~ MutationCount, data=df.E2MB, x=T, y=T)
+cph.mbPAM50 <- cph(Surv(Time, Event) ~ PAM50, data=df.E2MB, x=T, y=T)
+cph.mbIntClust <- cph(Surv(Time, Event) ~ IntClust, data=df.E2MB, x=T, y=T)
+
+set.seed(1234)
+validate(cph.mbgrade, method='boot', B=150)
+validate(cph.mbmutcount, method='boot', B=150)
+validate(cph.mbPAM50, method='boot', B=150)
+validate(cph.mbIntClust, method='boot', B=150)
+```
+
+
+
+```{r Proliferation index}
+######### Compare meta-PCNA proliferation signature -----------
+install.packages("ProliferativeIndex")
+library(ProliferativeIndex)
+
+temp <- readDataForPI(data.frame(metabric.exp), modelIDs = ENDORSE)
+metabric.PI <- calculatePI(temp)
+
+df.E2MB$PI <- metabric.PI
+
+cp.mbPI <- coxph(Surv(Time, Event) ~ PI, data=df.E2MB, x=T)
+plrtest(cp.6, cp.mbPI, nested = F)
+
+cph.mbPI <- cph(Surv(Time, Event) ~ PI, data=df, x=T, y=T)
+
+set.seed(1234)
+validate(cph.mbPI, method='boot', B=150)
+
+```
+
+
+```{r}
+
+tc <- kmeans(df.E2MB$PI, 3)$cluster
+p.fit <- survfit(Surv(Time, Event) ~ tc, data=df.E2MB)
+plot(p.fit, col=c("orange","purple", "darkred"), lwd=3)
+legend(100, .2, c("Ovarian Cancer", "Breast Cancer"), 
+       lty = c(1:2), col=c("orange","purple"))
+plot(p.fit)
+
+pdf("./../Figures/Fit_METABRIC_All_KMplots.pdf", width=6, height=6)
+
+dev.off()
+
+survdiff(Surv(Time, Event) ~ Group, data=E2.Surv.df)
+
+
+```
+
+```{r Partial likelihood ratio tests}
+library(nonnestcox)
+sink("./../Output/METABRIC_plrtest.txt")
+plrtest(cp.6, cp.0, nested=T)
+plrtest(cp.6, cp.5, nested=T)
+
+z1 <- which(!is.na(df.E2MB$TumorGrade))
+z2 <- which(!is.na(df.E2MB$MutationCount))
+cp.6_temp1 <- coxph(Surv(Time, Event) ~ ENDORSE + HALLMARK_ESTROGEN_RESPONSE_EARLY, data=df.E2MB[z1, ], x=T)
+cp.6_temp2 <- coxph(Surv(Time, Event) ~ ENDORSE + HALLMARK_ESTROGEN_RESPONSE_EARLY, data=df.E2MB[z2, ], x=T)
+cp.mbgrade <- coxph(Surv(Time, Event) ~ TumorGrade, data=df.E2MB[z1, ], x=T)
+cp.mbmutcount <- coxph(Surv(Time, Event) ~ MutationCount, data=df.E2MB[z2, ], x=T)
+
+plrtest(cp.6_temp1, cp.mbgrade, nested=F)
+plrtest(cp.6_temp2, cp.mbmutcount, nested=F)
+plrtest(cp.6, cp.mbPAM50, nested=F)
+plrtest(cp.6, cp.mbIntClust, nested=F)
+plrtest(cp.6, cp.mbPI, nested=F)
+
+plrtest(cp.6, cp.mbTC, nested=F)
+plrtest(cp.6, cp.mbSET, nested=F)
+plrtest(cp.6, cp.mbODX, nested=F)
+plrtest(cp.6, cp.mbODXCat, nested=F)
+sink()
+
+```
+
+```{r Plot corrected Dxy from validation}
+v.list <- list()
+set.seed(1234)
+v.list[[1]] <- validate(model.0, method='boot', B=150)
+v.list[[2]] <- validate(model.5, method='boot', B=150)
+v.list[[3]] <- validate(model.6, method='boot', B=150)
+v.list[[4]] <- validate(cph.mbgrade, method='boot', B=150)
+v.list[[5]] <- validate(cph.mbmutcount, method='boot', B=150)
+v.list[[6]] <- validate(cph.mbPAM50, method='boot', B=150)
+v.list[[7]] <- validate(cph.mbIntClust, method='boot', B=150)
+v.list[[8]] <- validate(cph.mbPI, method='boot', B=150)
+v.list[[9]] <- validate(cph.mbTC, method='boot', B=150)
+v.list[[10]] <- validate(cph.mbSET, method='boot', B=150)
+v.list[[11]] <- validate(cph.mbODX, method='boot', B=150)
+v.list[[12]] <- validate(cph.mbODXCat, method='boot', B=150)
+
+# Create dataframe
+Labs <- c("Empirical", "Estrogen response", "ENDORSE \n (empirical + estrogen response)", 
+          "Tumor grade", "Mutation count", "PAM50", "IntClust", "Proliferation index",
+          "TransCONFIRM", "SET", "ODX", "ODX25")
+
+df.val <- data.frame("Dxy" = unlist(lapply(v.list, "[", 1,5)), 
+                     "Labs" = factor(Labs, levels=rev(Labs)))
+
+# Horizontal version
+Pdxy <- ggplot(df.val, aes(x=Labs, y=Dxy)) +
+  geom_segment( aes(x=Labs, xend=Labs, y=0, yend=Dxy), color="skyblue", alpha=0.5) +
+  geom_point(color="orange", size=4) +
+  theme_bw(base_size = 12) +
+  coord_flip() +
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.x = element_blank(), 
+        panel.border = element_blank(), 
+        axis.ticks.y = element_blank()) +
+  labs(x="Prediction model", y="Corrected Dxy")
+
+pdf("./../Figures/METABRIC.Validate.Dxy.B150.pdf", height =  4, width=8)
+print(Pdxy)
+dev.off()
+
+```
+
+
+
+```{r Key pathways and E2 risk}
+## Continuous test
+CorFilter <- function(Xmat, Y, thresh=0.5, method='spearman') {
+  
+  Cor.tests <- apply(Xmat, 2, cor.test, Y, method=method)
+  
+  Cor.tests.p <- p.adjust(sapply(Cor.tests, "[", 3), method = 'fdr')
+  Cor.tests.r <- as.numeric(sapply(Cor.tests, "[", 4))
+  
+  Filt <- which(Cor.tests.p < 0.05 & abs(Cor.tests.r) > thresh)
+  
+  return(data.frame("Name"=colnames(Xmat)[Filt], "p"=Cor.tests.p[Filt], "r"=Cor.tests.r[Filt]))
+}
+
+metabric.hall <- readRDS("./../Data/METABRIC.HALLMARK.RDS")
+metabric.c2 <- readRDS("./../Data/METABRIC.C2.RDS")
+metabric.c6 <- readRDS("./../Data/METABRIC.C6.RDS")
+
+MB.hall.cors <- CorFilter(t(metabric.hall), E2.risk, thresh = 0.5)
+MB.c2.cors <- CorFilter(t(metabric.c2), E2.risk, thresh = 0.5)
+MB.c6.cors <- CorFilter(t(metabric.c6), E2.risk, thresh = 0.5)
+
+print(MB.hall.cors)
+print(MB.c6.cors)
+
+metabric.hall.gams <- apply(t(metabric.hall), 2, GamApp, E2.risk)
+metabric.c2.gams <- apply(t(metabric.c2), 2, GamApp, E2.risk)
+metabric.c6.gams <- apply(t(metabric.c6), 2, GamApp, E2.risk)
+
+write.csv(t(metabric.hall.gams), file="./../Output/metabric.hall.gams.csv")
+write.csv(t(metabric.c2.gams), file="./../Output/metabric.c2.gams.csv")
+write.csv(t(metabric.c6.gams), file="./../Output/metabric.c6.gams.csv")
+
+tail(sort(metabric.hall.gams[3,]), 20)
+tail(sort(metabric.c2.gams[3,]), 20)
+tail(sort(metabric.c6.gams[3,]), 20)
+
+
+PPL <- list()
+PPL[[1]] <- ggplot(df, aes(x=HALLMARK_G2M_CHECKPOINT, y=Risk, color=HALLMARK_G2M_CHECKPOINT))  +
+  geom_point(size=3) +
+  scale_colour_gradient2(low = "blue", mid = "grey80", high = "red", name="GES") +
+  geom_smooth(method='gam', se=T, color='navy', size=3) +
+  labs(x="Cell cycle progression", y="ENDORSE") +
+  theme_classic(base_size = 16) +
+  theme(axis.title = element_text(size=14, face="bold"),
+        title = element_text(size=16, face="bold", color="grey25"))
+
+PPL[[2]] <- ggplot(df, aes(x=E2F1_UP.V1_UP, y=Risk, color=E2F1_UP.V1_UP))  +
+  geom_point(size=3) +
+  scale_colour_gradient2(low = "blue", mid = "grey80", high = "red", name="GES") +
+  geom_smooth(method='gam', se=T, color='navy', size=3) +
+  labs(x="E2F1 upregulation", y="ENDORSE") +
+  theme_classic(base_size = 16) +
+  theme(axis.title = element_text(size=14, face="bold"),
+        title = element_text(size=16, face="bold", color="grey25"))
+
+PPL[[3]] <- ggplot(df, aes(x=MTOR_UP.V1_UP, y=Risk, color=MTOR_UP.V1_UP))  +
+  geom_point(size=3) +
+  scale_colour_gradient2(low = "blue", mid = "grey80", high = "red", name="GES") +
+  geom_smooth(method='gam', se=T, color='navy', size=3) +
+  labs(x="MTOR upregulation", y="ENDORSE") +
+  theme_classic(base_size = 16) +
+  theme(axis.title = element_text(size=14, face="bold"),
+        title = element_text(size=16, face="bold", color="grey25"))
+
+pdf("./../Figures/METABRIC.pathways.pdf", height =  4, width=15)
+egg::ggarrange(plots=PPL, nrow=1)
+dev.off()
+
+```
+
+
+
+```{r Scatterplot for key pathways, fig.height=5, fig.width= 5}
+library(ggpubr)
+
+x1 <- match(MB.hall.cors$Name, rownames(metabric.hall))
+x2 <-  match(MB.c6.cors$Name, rownames(metabric.c6))
+df <- data.frame(cbind(t(metabric.hall[x1, ]), t(metabric.c6[x2, ])), "Risk"=E2.risk)  
+
+PIK_Mut <- array(0, dim=nrow(df))
+PIK <- which(MB.mut$Hugo_Symbol == "PIK3CA")
+
+PIK_Mut[match(MB.mut$Tumor_Sample_Barcode[PIK], rownames(df))] <- 1
+df$PIK_Mut <- PIK_Mut
+
+P_Path_Scatter <- list()
+for (i in 1:ncol(df)) {
+  P_Path_Scatter[[i]] <- ggplot(df, aes_string(x="Risk", y=colnames(df)[i], color=colnames(df)[i]))  +
+    geom_point(size=3) +
+    scale_color_continuous(type = 'viridis', name="GES") +
+    geom_smooth(method='glm', se=T, color='navy', size=3) +
+    labs(x="ENDORSE", y="GES", title=gsub("_", " ", colnames(df)[i])) +
+    theme_classic(base_size = 16) +
+    theme(axis.title = element_text(size=14, face="bold"),
+          title = element_text(size=16, face="bold", color="grey25"))
+}
+
+pdf("./../Figures/Scatter_Path_METABRIC.pdf", width=6, height=4.5)
+P_Path_Scatter
+dev.off()
+
+ggplot(df, aes(x=HALLMARK_MTORC1_SIGNALING, y=HALLMARK_PI3K_AKT_MTOR_SIGNALING, z=Risk)) +
+  geom_point(aes(color=Risk), size=3) +
+  #stat_density2d() + 
+  scale_color_gradient(low="salmon", high="navy")
+
+summary(lm(Risk ~ HALLMARK_MTORC1_SIGNALING + HALLMARK_PI3K_AKT_MTOR_SIGNALING, data=df))
+summary(lm(HALLMARK_MTORC1_SIGNALING ~ HALLMARK_PI3K_AKT_MTOR_SIGNALING, data=df))
+
+# Heatmaps of signature genes and key pathways}
+library(RColorBrewer)
+library(ComplexHeatmap)
+
+column_ha = HeatmapAnnotation(Risk = anno_barplot(E2.risk, gp = gpar(col = "darkred")))
+H1 <- Heatmap(t(df[,1:29]), use_raster = T,
+        name = "GES", #title of legend
+        column_title = "METABRIC ER+ Breast Cancers", row_title = "Key pathways",
+        show_column_names = FALSE,
+        row_names_gp = gpar(fontsize = 6), # Text size for row names
+        column_split = E2.risk.grps,
+        #column_order = sort(E2.risk),
+        col = brewer.pal(5, "PiYG"), 
+        top_annotation = column_ha)
+
+pdf("./../Figures/Heatmap_Path_METABRIC.pdf", width=6, height=6)
+H1
+dev.off()
+
+corrs <- cor(df[, c(30, 3, 4, 5)])
+pairs(df[, c(30, 3, 4, 5)])
+
+pcor(df[, c(30, 4, 5)], method = "kendall")
+corrplot(pcor(df[, c(30, 4, 5)], method = "kendall")$estimate)
+
+ggplot(df, aes(x=HALLMARK_PI3K_AKT_MTOR_SIGNALING, y=HALLMARK_MTORC1_SIGNALING , color=Risk))  +
+    geom_point(size=3) +
+    scale_color_continuous(type = 'viridis', name="Risk") +
+    geom_smooth(method='glm', se=T, color='navy', size=3) +
+    labs(x="PI3K/AKT", y="MTOR") +
+    geom_vline(xintercept = median(df$HALLMARK_PI3K_AKT_MTOR_SIGNALING), linetype=2,  color="salmon", size=2) +
+    geom_hline(yintercept = median(df$HALLMARK_MTORC1_SIGNALING), linetype=2, color="salmon", size=2) +
+    theme_classic(base_size = 16) +
+    theme(axis.title = element_text(size=14, face="bold"),
+          title = element_text(size=16, face="bold", color="grey25"))
+
+yc0 <- which(df$Risk >= 2)
+
+yc1 <- which(df$HALLMARK_MTORC1_SIGNALING >= median(df$HALLMARK_MTORC1_SIGNALING) & 
+               df$HALLMARK_PI3K_AKT_MTOR_SIGNALING < median(df$HALLMARK_PI3K_AKT_MTOR_SIGNALING))
+
+yc2 <- which(df$HALLMARK_PI3K_AKT_MTOR_SIGNALING >= median(df$HALLMARK_PI3K_AKT_MTOR_SIGNALING) & 
+               df$HALLMARK_MTORC1_SIGNALING >= median(df$HALLMARK_MTORC1_SIGNALING)) 
+
+yc3 <- which(df$HALLMARK_PI3K_AKT_MTOR_SIGNALING >= median(df$HALLMARK_PI3K_AKT_MTOR_SIGNALING) & 
+               df$HALLMARK_MTORC1_SIGNALING < median(df$HALLMARK_MTORC1_SIGNALING))
+
+yc4 <- which(df$HALLMARK_PI3K_AKT_MTOR_SIGNALING < median(df$HALLMARK_PI3K_AKT_MTOR_SIGNALING) & 
+               df$HALLMARK_MTORC1_SIGNALING < median(df$HALLMARK_MTORC1_SIGNALING))
+
+length(intersect(yc0, yc1))
+length(intersect(yc0, yc2))
+length(intersect(yc0, yc3))
+length(intersect(yc0, yc4))
+
+7 + 55 + 3 + 2
+7*100/67
+55*100/67
+3*100/67
+2*100/67
+
+library(GGally)
+ggbivariate(df[, c(30, 3, 4, 5)], outcome = "Risk")
+
+ggplot(df, aes(x=HALLMARK_PI3K_AKT_MTOR_SIGNALING, y=Risk, color=PIK_Mut))  +
+    geom_point(size=3) +
+    #scale_color_continuous(type = 'viridis', name="Risk") +
+    geom_smooth(method='glm', se=T, color='navy', size=3) +
+    labs(x="PI3K/AKT", y="ENDORSE") +
+    geom_vline(xintercept = median(df$HALLMARK_PI3K_AKT_MTOR_SIGNALING), linetype=2,  color="salmon", size=2) +
+    #geom_hline(yintercept = median(df$HALLMARK_MTORC1_SIGNALING), linetype=2, color="salmon", size=2) +
+    theme_classic(base_size = 16) +
+    theme(axis.title = element_text(size=14, face="bold"),
+          title = element_text(size=16, face="bold", color="grey25"))
+
+
+ggplot(df, aes(x=HALLMARK_PI3K_AKT_MTOR_SIGNALING, y=Risk, color=PIK_Mut))  +
+    geom_point(size=3) +
+    #scale_color_continuous(type = 'viridis', name="Risk") +
+    geom_smooth(method='gam', se=T, color='navy', size=3) +
+    labs(x="PI3K/AKT", y="ENDORSE") +
+    geom_vline(xintercept = median(df$HALLMARK_PI3K_AKT_MTOR_SIGNALING), linetype=2,  color="salmon", size=2) +
+    #geom_hline(yintercept = median(df$HALLMARK_MTORC1_SIGNALING), linetype=2, color="salmon", size=2) +
+    theme_classic(base_size = 16) +
+    theme(axis.title = element_text(size=14, face="bold"),
+          title = element_text(size=16, face="bold", color="grey25"))
+
+```
+
+
+
+```{r Key mutations and E2}
+mut.cbio <- read.delim("./../Data/METABRIC/Mutated_Genes.txt", header=T)
+cna.cbio <- read.delim("./../Data/METABRIC/CNA_Genes.txt", header=T)
+
+length(which(as.numeric(gsub("%", "", mut.cbio$Freq)) > 5)) #28
+length(which(as.numeric(gsub("%", "", cna.cbio$Freq)) > 5)) #2380
+
+xmut <- which(as.numeric(gsub("%", "", mut.cbio$Freq)) > 5)
+xcna <- which(as.numeric(gsub("%", "", cna.cbio$Freq)) > 5)
+
+table(mut.cbio$Is.Cancer.Gene..source..OncoKB.[xmut]) #yes = 12, no =16
+
+table(cna.cbio$Is.Cancer.Gene..source..OncoKB.[xcna]) #yes = 132, no =2248
+temp <- data.frame(table(cna.cbio$Cytoband[xcna]))
+temp[order(Freq)]
+
+
+gmut <- droplevels(mut.cbio$Gene[which(as.numeric(gsub("%", "", mut.cbio$Freq)) > 5 & mut.cbio$Is.Cancer.Gene..source..OncoKB. == "Yes")])
+gcna <- droplevels(cna.cbio$Gene[which(as.numeric(gsub("%", "", cna.cbio$Freq)) > 5 & cna.cbio$Is.Cancer.Gene..source..OncoKB. == "Yes")])
+rcna <- droplevels(cna.cbio$Cytoband[which(as.numeric(gsub("%", "", cna.cbio$Freq)) > 5)])
+
+####################  Somatic mutations with synonymous mutations removed ### ------------------------------------------------
+x <- match(metabric.mut$Tumor_Sample_Barcode, colnames(metabric.s))
+MB.mut <- metabric.mut[which(!is.na(x)), ]
+length(unique(MB.mut$Hugo_Symbol)) #169
+ 
+MB.mut <- MB.mut[which(MB.mut$Hugo_Symbol %in% gmut), ]
+
+### Mutations vs. E2 risks
+mut.g <- unique(unlist(MB.mut[,1]))
+mut.E2.t <- list()
+for (i in 1:length(mut.g)) {
+  
+  mset <- MB.mut$Tumor_Sample_Barcode[which(unlist(MB.mut[,1]) %in%  mut.g[i])]
+  
+  mlabs <- array(data=0, dim=length(E2.risk))
+  
+  mlabs[match(mset, colnames(metabric.s))] <- 1
+  
+  mut.E2.t[[i]] <- try(t.test(E2.risk ~ mlabs))
+  print(i)  
+}
+
+mut.E2.pvals <- p.adjust(as.numeric(sapply(mut.E2.t, "[", 3)), method = 'fdr')
+mut.E2.sig <- which(mut.E2.pvals < 0.05)
+
+for (i in 1:length(mut.E2.sig)) {
+  mset <- MB.mut$Tumor_Sample_Barcode[which(unlist(MB.mut[,1]) %in%  mut.g[mut.E2.sig[i]])]
+  mlabs <- array(data=0, dim=length(E2.risk))
+  mlabs[match(mset, colnames(metabric.s))] <- 1
+  assign(paste("mlab", mut.g[mut.E2.sig[i]], sep="_"), mlabs)
+}
+
+df.E2mut.pvals <- data.frame("Gene"=mut.g, "P"=as.numeric(sapply(mut.E2.t, "[", 3)), "FDR"=mut.E2.pvals)
+df.E2mut <- cbind(df.E2MB, 
+                  "CBFB"=as.factor(mlab_CBFB),
+                  "GATA3"=as.factor(mlab_GATA3), 
+                  "MAP3K1"=as.factor(mlab_MAP3K1), 
+                  "PIK3CA"=as.factor(mlab_PIK3CA),
+                  "TP53"=as.factor(mlab_TP53))
+
+write.csv(df.E2mut.pvals, file="./../Output/METABRIC.E2.mut.csv")
+
+##### Cox models using RMS package #####
+cph.mut <- apply(df.E2mut[, 15:19], 2, function (x) cph(Surv(Time, Event) ~ x, data=df.E2mut))
+
+#### PIK3CA mutations 
+PIK3CA <- matrix(readRDS("~/Desktop/Biomarkers/Scripts/PIK3CA.RDS"), ncol=3)[,3]
+
+x <- match(metabric.mut$Tumor_Sample_Barcode, colnames(metabric.s))
+sum(!is.na(x)) #4511
+MB.mut2 <- metabric.mut[which(!is.na(x)), ]
+ipi <- which(metabric.mut$Hugo_Symbol == "PIK3CA")
+MB.mut.pik <- MB.mut2[ipi,]
+  
+pbm <- which(MB.mut.pik$HGVSp %in% PIK3CA)
+
+pbm_i <- array(data=0, dim=ncol(metabric.s))
+pbm_i[match(MB.mut.pik$Tumor_Sample_Barcode[pbm], colnames(metabric.s))] <- 1
+
+t.test(E2.risk ~ pbm_i) #P=0.4704
+df.E2mut <- cbind(df.E2mut, 
+                  "PIK3CA_biomarker"=as.factor(pbm_i))
+```
+
+
+```{r Key CNAs and E2}
+################# CNAs ################### ------------------------------------------------------------------
+y <- match(colnames(metabric.s), colnames(metabric.cnv))
+MB.cnv <- data.frame(metabric.cnv)[, y]
+rownames(MB.cnv) <- metabric.cnv$Hugo_Symbol
+
+MB.cnv <- na.omit(MB.cnv)
+MB.cnv <- MB.cnv[which(rownames(MB.cnv) %in% gcna), ]
+
+bin_loss <- function (x) {
+  x <- as.numeric(x)
+  x[which(x >= -1)] <- 0 #all more than -1
+  x[which(x < -1)] <- 1 #loss of 2
+  return(x)
+}
+
+bin_gain <- function (x) {
+  x <- as.numeric(x)
+  x[which(x <= 1)] <- 0 #all less than 1
+  x[which(x > 1)] <- 1 #gain of 2
+  return(x)
+}
+
+bl.res <- list(); bg.res <- list()
+for (i in 1:nrow(MB.cnv)) {
+  print(i)
+  bl <- bin_loss(MB.cnv[i,])
+  if (sum(bl == 1) < 0.1*ncol(MB.cnv)) bl.res[[i]] <- NA else bl.res[[i]] <- summary(aov(E2.risk ~ bl))
+  
+  bg <- bin_gain(MB.cnv[i,])
+  if (sum(bg == 1) < 0.1*ncol(MB.cnv)) bg.res[[i]] <- NA else bg.res[[i]] <- summary(aov(E2.risk ~ bg))
+  
+}
+
+which(!is.na(bl.res)) #0
+
+apos <- which(!is.na(bg.res)) #89
+apos_p <- array(dim=length(apos))
+for (i in 1:length(apos)) {
+ apos_p[i] <-  bg.res[[apos[i]]][[1]][[5]][1]
+}
+sic <-  which(p.adjust(apos_p, method = 'fdr') < 0.05)
+rownames(MB.cnv)[apos[sic]]
+
+MB.cnv.sig.E2gains <- apply(MB.cnv[apos[sic], ], 1, bin_gain)
+MB.cnv.sig.E2gains <- apply(MB.cnv.sig.E2gains, 2, as.factor)
+
+df.E2cnv <- data.frame(df.E2MB, MB.cnv.sig.E2gains) 
+df.E2cnv.pvals <- data.frame("Gene"=rownames(MB.cnv)[apos[sic]],
+                             "P"=apos_p[sic],
+                             "FDR"=p.adjust(apos_p, method = 'fdr')[sic])
+df.E2cnv.pvals$Cyto <- droplevels(cna.cbio$Cytoband[match(df.E2cnv.pvals$Gene, cna.cbio$Gene)])
+
+write.csv(df.E2cnv.pvals, file="./../Output/METABRIC.E2.cnv.csv")
+
+temp$stats[5] #P
+temp$stats[9] #Dxy
+
+cph.cnv <- apply(df.E2cnv[, 15:52], 2, function (x) cph(Surv(Time, Event) ~ x, data=df.E2cnv))
+
+for (i in 1:length(cph.cnv)) {
+  cph.cnv[[i]]$stats
+}
+```
+
+
+```{r Plot Mutations, CNVs and risk}
+######################## PLOT MUT/CNVs vs. E2 risk #########################################
+library(ggplot2)
+library(viridis)
+
+# Plot
+Plts <- list()
+for (i in 15:ncol(df.E2mut)) {
+  Plts[[i]] <- ggplot(df.E2mut, aes_string(y = "ENDORSE", x = colnames(df.E2mut)[i], fill = colnames(df.E2mut)[i])) +
+  geom_boxplot(width=0.5) +
+  scale_fill_brewer(type = "div", palette = "Accent") +
+  labs(x="", title=gsub("mlab_", "", colnames(df.E2mut)[i]), y="ENDORSE") +
+  theme_classic(base_size = 16) +
+  theme(axis.title = element_text(size=14, face="bold"),
+        title = element_text(size=16, face="bold", color="grey25"), 
+        legend.position = "none", axis.text.x=element_blank(), axis.ticks.x=element_blank())
+}
+
+pdf("./../Figures/E2_Mutations.pdf", width=3.5, height=4)
+Plts
+dev.off()
+
+Plts <- list()
+for (i in 15:ncol(df.E2cnv)) {
+  Plts[[i]] <- ggplot(df.E2cnv, aes_string(y = "ENDORSE", x = colnames(df.E2cnv)[i], fill = colnames(df.E2cnv)[i])) +
+  geom_boxplot(width=0.5) +
+  scale_fill_brewer(type = "div", palette = "Accent") +
+  labs(x="", title=colnames(df.E2cnv)[i], y="ENDORSE") +
+  theme_classic(base_size = 16) +
+  theme(axis.title = element_text(size=14, face="bold"),
+        title = element_text(size=16, face="bold", color="grey25"), 
+        legend.position = "none", axis.text.x=element_blank(), axis.ticks.x=element_blank())
+}
+
+sk <- as.factor(c(rep("O", 14), rep("1", ncol(df.E2cnv) - 14)))
+Plts <- split(Plts, sk)$"1"
+
+pdf("./../Figures/E2_CNVs.pdf", width=12, height=14)
+egg::ggarrange(plots = Plts, nrow = 7)
+dev.off()
+
+
+#### Plot Dxy of single-gene mutation models ########
+temp <- data.frame(Name=character(),
+                 Pval=double(), 
+                 Dxy=double(), 
+                 stringsAsFactors = F)
+                 
+for (i in 1:length(cph.mut)) {
+  temp[i, 1] <- names(cph.mut)[i]
+  temp[i, 2] <- cph.mut[[i]]$stats[5] #P
+  temp[i, 3] <- cph.mut[[i]]$stats[9] #Dxy
+}
+write.csv(temp, file="./../Output/CPH.E2.muts.csv")
+
+Labs <- gsub("mlab_", "", temp$Name)
+df.dxy.mut <- data.frame("Dxy" = temp$Dxy, 
+                     "Labs" = factor(Labs, levels=c("TP53", "PIK3CA", "CBFB", "GATA3", "MAP3K1")))
+
+Pdxy <- ggplot(df.dxy.mut, aes(x=Labs, y=Dxy)) +
+  geom_segment( aes(x=Labs, xend=Labs, y=0, yend=Dxy), color="skyblue", alpha=0.5) +
+  geom_point(color="orange", size=4) +
+  geom_hline(yintercept = 0.3, lwd=1.5, lty=2, color="grey50") +
+  theme_bw(base_size = 16) +
+  coord_flip() +
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.x = element_blank(), 
+        panel.border = element_blank(), 
+        axis.ticks.y = element_blank()) +
+  labs(x="", y="Dxy")
+
+pdf("./../Figures/METABRIC.Mut.Dxy.pdf", height = 2, width=8)
+print(Pdxy)
+dev.off()
+
+#### Plot Dxy of single-gene mutation and CNA models ########
+temp <- data.frame(Name=character(),
+                 Pval=double(), 
+                 Dxy=double(), 
+                 stringsAsFactors = F)
+
+for (i in 1:length(cph.cnv)) {
+  temp[i, 1] <- names(cph.cnv)[i]
+  temp[i, 2] <- cph.cnv[[i]]$stats[5] #P
+  temp[i, 3] <- cph.cnv[[i]]$stats[9] #Dxy
+}
+write.csv(temp, file="./../Output/CPH.E2.cnv.csv")
+
+Labs_level <- read.table("./../Output/plot_order_CNV.txt", header=F, stringsAsFactors = F)$V1
+Labs <- temp$Name
+df.dxy.cnv <- data.frame("Dxy" = temp$Dxy, 
+                     "Labs" = factor(Labs, levels=Labs_level))
+
+# Horizontal version
+Pdxy <- ggplot(df.dxy.cnv, aes(x=Labs, y=Dxy)) +
+  geom_segment( aes(x=Labs, xend=Labs, y=0, yend=Dxy), color="skyblue", alpha=0.5) +
+  geom_point(color="orange", size=4) +
+  geom_hline(yintercept = 0.3, lwd=1.5, lty=2, color="grey50") +
+  theme_bw(base_size = 16) +
+  coord_flip() +
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.x = element_blank(), 
+        panel.border = element_blank(), 
+        axis.ticks.y = element_blank()) +
+  labs(x="", y="Dxy")
+
+pdf("./../Figures/METABRIC.CNA.Dxy.pdf", height = 6.5, width=8)
+print(Pdxy)
+dev.off()
+
+```
+
+
+
+```{r METABTIC negative control: ER negative tumors}
+rownames(metabric.annot) <- metabric.annot$PATIENT_ID
+x <- which(metabric.annot$ER_IHC == "Negative")
+y <- intersect(metabric.annot$PATIENT_ID[x], colnames(metabric))
+metabric.annot.n <- metabric.annot[y,]
+metabric.n <- metabric[, y]
+metabric.n <- t(scale(t(metabric.n)))
+
+OS_EVENT <- array()
+OS_EVENT[which(metabric.annot.n$OS_STATUS == "LIVING")] <- 0
+OS_EVENT[which(metabric.annot.n$OS_STATUS == "DECEASED")] <- 1
+
+metabric.annot.n$OS_EVENT <- OS_EVENT
+
+saveRDS(metabric.n, file="./../Data/metabric.n.RDS")
+saveRDS(metabric.annot.n, file="./../Data/metabric.annot.n.RDS")
+
+MB.n <- gsva(metabric.n, gset.idx.list = list("ENDORSE"=ENDORSE,"HALLMARK_ESTROGEN_RESPONSE_EARLY" = H_ESTR_EARLY),
+                   verbose=TRUE, kcdf="Gaussian", method='ssgsea', ssgsea.norm=T)
+
+df.E2n <- data.frame('Time'=metabric.annot.n$OS_MONTHS, 
+                 'Event'=as.numeric(metabric.annot.n$OS_EVENT), 
+                 t(MB.n))
+
+cp.n.6 <- coxph(Surv(Time, Event) ~ ENDORSE + HALLMARK_ESTROGEN_RESPONSE_EARLY, data=df.E2n, x=T)
+
+E2.n.risk <- predict(cp.n.6, type='risk')
+E2.n.risk.grps <- MakeRiskGrp(E2.n.risk)
+
+E2.n.Surv.df <- data.frame('Time'=metabric.annot.n$OS_MONTHS, 
+                           'Event'=as.numeric(metabric.annot.n$OS_EVENT),
+                           "Group"=E2.n.risk.grps)
+
+fit.E2.n <- survfit(Surv(Time, Event) ~ Group, data=E2.n.Surv.df)
+
+P.MB.n <- ggsurvplot(fit.E2.n, data=E2.n.Surv.df, palette="jco", 
+                  censor.shape="|", censor.size=2, 
+                  break.time.by=60, 
+                  legend.title="ENDORSE", legend.labs=c("Low risk", "Medium risk"),
+                  surv.median.line = "hv",
+                  risk.table=T, 
+                  ggtheme=theme_classic2(base_size = 14))
+
+pdf("./../Figures/Fit_METABRIC.n_ENDORSE.pdf", width=6, height=6)
+print(P.MB.n)
+dev.off()
+
+survdiff(Surv(Time, Event) ~ Group, data=E2.n.Surv.df)
+
+
+```
+
+
+
+```{r}
+xc <- which(metabric.annot$ER_IHC == "Positve" & metabric.annot$CHEMOTHERAPY == "YES")
+yc <- intersect(metabric.annot$PATIENT_ID[xc], colnames(metabric))
+
+metabric.annot.c <- metabric.annot[yc,]
+metabric.c <- metabric[, yc]
+metabric.c <- t(scale(t(metabric.c)))
+
+OS_EVENT <- array()
+OS_EVENT[which(metabric.annot.c$OS_STATUS == "LIVING")] <- 0
+OS_EVENT[which(metabric.annot.c$OS_STATUS == "DECEASED")] <- 1
+
+metabric.annot.c$OS_EVENT <- OS_EVENT
+
+saveRDS(metabric.n, file="./../Data/metabric.c.RDS")
+saveRDS(metabric.annot.c, file="./../Data/metabric.annot.c.RDS")
+
+MB.c <- gsva(metabric.c, gset.idx.list = list("ENDORSE"=ENDORSE,"HALLMARK_ESTROGEN_RESPONSE_EARLY" = H_ESTR_EARLY),
+                   verbose=TRUE, kcdf="Gaussian", method='ssgsea', ssgsea.norm=T)
+
+df.E2c <- data.frame('Time'=metabric.annot.c$OS_MONTHS, 
+                 'Event'=as.numeric(metabric.annot.c$OS_EVENT), 
+                 t(MB.c))
+
+cp.c.6 <- coxph(Surv(Time, Event) ~ ENDORSE + HALLMARK_ESTROGEN_RESPONSE_EARLY, data=df.E2c, x=T)
+
+E2.c.risk <- predict(cp.c.6, type='risk')
+E2.c.risk.grps <- MakeRiskGrp(E2.c.risk)
+
+E2.c.Surv.df <- data.frame('Time'=metabric.annot.c$OS_MONTHS, 
+                           'Event'=as.numeric(metabric.annot.c$OS_EVENT),
+                           "Group"=E2.c.risk.grps)
+
+fit.E2.c <- survfit(Surv(Time, Event) ~ Group, data=E2.c.Surv.df)
+
+P.MB.c <- ggsurvplot(fit.E2.c, data=E2.c.Surv.df, palette="jco", 
+                  censor.shape="|", censor.size=2, 
+                  break.time.by=60, 
+                  legend.title="ENDORSE", legend.labs=c("Low risk", "Medium risk", "High risk"),
+                  surv.median.line = "hv",
+                  risk.table=T, 
+                  ggtheme=theme_classic2(base_size = 14))
+
+pdf("./../Figures/Fit_METABRIC.c_ENDORSE.pdf", width=6, height=6)
+print(P.MB.c)
+dev.off()
+
+survdiff(Surv(Time, Event) ~ Group, data=E2.c.Surv.df)
+
+
+```
+

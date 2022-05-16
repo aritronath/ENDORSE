@@ -1,0 +1,361 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r}
+library(doParallel)
+registerDoParallel(cores=(detectCores() - 1))
+source("./ENDORSE_manuscript_scripts/Useful_functions.R")
+```
+
+```{r}
+library(GSVA)
+library(GSEABase)
+library(survival)
+library(survminer)
+
+load(file="./../Output/metabric_er.RData")
+metabric.os <- readRDS("./metabric.os.RDS")
+metabric.os.event <- readRDS("./metabric.os.event.RDS")
+metabric.s <- readRDS("./metabric.s.RDS")
+ENDORSE <- readRDS("./ENDORSE.RDS") 
+H_ESTR_EARLY <- readRDS("./H_ESTR_EARLY.RDS")
+```
+
+#### Model comparison by splitting the training data 80/20 
+#### Re-train the classifier on training split 
+#### Predict only using the test set 
+#### Compare with the performance of independent predictors on the test set 
+
+```{r Split METABRIC into training and test splits for validatiobn}
+set.seed(1)
+nTrain <- floor(0.5*ncol(metabric.s))
+TRAIN.id <- sample(c(1:ncol(metabric.s)), size = nTrain, replace = F) 
+test.id <- c(1:ncol(metabric.s))[-TRAIN.id]
+
+##### Perform feature selection on the training split for ENDORSE ######
+# Survival objects 
+TRAIN.surv = Surv(metabric.os[TRAIN.id], as.numeric(metabric.os.event[TRAIN.id]))
+TRAIN.age <- metabric.annotV2$AGE_AT_DIAGNOSIS[match(colnames(metabric.s)[TRAIN.id], metabric.annotV2$PATIENT_ID)]
+# Make the signatures 
+library(glmnet)
+library(doParallel)
+TRAIN.cv.exp <- cv.glmnet(x=cbind(t(metabric.s[, TRAIN.id]), TRAIN.age),
+                          y=TRAIN.surv, family = 'cox', alpha=1, parallel = T)
+    
+TRAIN_gseed <- names(which(getCoefs(TRAIN.cv.exp, option='1se') > 0))
+TRAIN_geneset <- names(GetCorGenes(TRAIN_gseed, t(metabric.s[, TRAIN.id]), cof=0.75))
+
+#####
+
+MB.TRAIN <- gsva(metabric.s[, TRAIN.id], gset.idx.list = list("ENDORSE"=TRAIN_geneset, 
+                                               "HALLMARK_ESTROGEN_RESPONSE_EARLY" = H_ESTR_EARLY), verbose=TRUE, kcdf="Gaussian", method='ssgsea', ssgsea.norm=T)
+
+MB.test <- gsva(metabric.s[, test.id], gset.idx.list = list("ENDORSE"=TRAIN_geneset, 
+                                               "HALLMARK_ESTROGEN_RESPONSE_EARLY" = H_ESTR_EARLY), verbose=TRUE, kcdf="Gaussian", method='ssgsea', ssgsea.norm=T)
+
+df.MB.TRAIN <- data.frame('Time'=metabric.os[TRAIN.id], 
+                 'Event'=as.numeric(metabric.os.event)[TRAIN.id],
+                 t(MB.TRAIN))
+
+cp.6.TRAIN <- coxph(Surv(Time, Event) ~ ENDORSE + HALLMARK_ESTROGEN_RESPONSE_EARLY, data=df.MB.TRAIN, x=T)
+
+MB.TRAIN.pred <- predict(cp.6.TRAIN, data.frame(t(MB.TRAIN)), type="risk")
+MB.TRAIN.pred.grp <- MakeRiskGrp(MB.TRAIN.pred)
+
+df.MB.TRAIN$Risk <- MB.TRAIN.pred
+df.MB.TRAIN$Group <- MB.TRAIN.pred.grp
+
+TRAIN.fit <- survfit(Surv(Time, Event) ~ Group, data=df.MB.TRAIN)
+Plt.TRAIN <- ggsurvplot(TRAIN.fit, data=df.MB.TRAIN, palette="jco", 
+                        censor.shape="|", censor.size=2, 
+                        break.time.by=60, 
+                        legend.title="ENDORSE", legend.labs=c("Low risk", "Medium risk",  "High risk"),
+                        #surv.median.line = "hv",
+                        risk.table=F, 
+                        ggtheme=theme_classic2(base_size = 14))
+
+summary(coxph(Surv(Time, Event) ~ Group, data=df.MB.TRAIN)) #p=3e-09
+summary(coxph(Surv(Time, Event) ~ Risk, data=df.MB.TRAIN)) #p=3e-10
+
+# predict
+MB.test.pred <- predict(cp.6.TRAIN, data.frame(t(MB.test)), type="risk")
+MB.test.pred.grp <- MakeRiskGrp(MB.test.pred)
+
+#print(paste("ENDORSE score = ", round(MB.test.pred, 2)))
+table(MB.test.pred.grp)
+
+df.MB.test <- data.frame('Time'=metabric.os[test.id], 
+                         'Event'=as.numeric(metabric.os.event)[test.id],
+                         'Risk'=MB.test.pred, 
+                         'Group'=MB.test.pred.grp,
+                         t(MB.test))
+
+test.fit <- survfit(Surv(Time, Event) ~ Group, data=df.MB.test)
+Plt.test <- ggsurvplot(test.fit, data=df.MB.test, palette="jco", 
+                 censor.shape="|", censor.size=2, 
+                 break.time.by=60, 
+                 legend.title="ENDORSE", legend.labs=c("Low risk", "Medium risk",  "High risk"),
+                 #surv.median.line = "hv",
+                 risk.table=F, 
+                 ggtheme=theme_classic2(base_size = 14))
+
+summary(coxph(Surv(Time, Event) ~ Group, data=df.MB.test)) #p=2e-08
+summary(coxph(Surv(Time, Event) ~ Risk, data=df.MB.test)) #p=3e-09
+
+pdf("./../Figures/METABRIC.TRAIN.test.Survplot.pdf", height=5, width=5)
+print(Plt.TRAIN)
+print(Plt.test)
+dev.off()
+
+```
+
+
+```{r External Signatures}
+library(rms)
+############# Apply TransCONFIRM signature #########################
+MB.test.TransCONFIRM <- TransCONFIRM(t(metabric.s[, test.id]))
+
+############# Apply SET signature #########################
+MB.test.SET <- SET_Score(t(metabric.s[, test.id]))
+
+############# Apply ODX scores #########################
+MB.test.ODX <- ODX_RS(scale(t(metabric.s[, test.id])))
+MB.test.ODX.cat <- array(data=0, dim=length(MB.test.ODX))
+MB.test.ODX.cat[which(MB.test.ODX > quantile(MB.test.ODX, 0.25))] <- 1
+
+df.MB.test <- cbind(df.MB.test, "TransCONFIRM"=MB.test.TransCONFIRM, "SET"=MB.test.SET, 
+                 "ODX"=MB.test.ODX,"ODX_Cat"=MB.test.ODX.cat)
+
+cp.test.risk <- coxph(Surv(Time, Event) ~ Risk, data=df.MB.test, x=T)
+cp.test.group <- coxph(Surv(Time, Event) ~ Group, data=df.MB.test, x=T)
+cp.test.TC <- coxph(Surv(Time, Event) ~ TransCONFIRM, data=df.MB.test, x=T)
+cp.test.SET <- coxph(Surv(Time, Event) ~ SET, data=df.MB.test, x=T)
+cp.test.ODX <- coxph(Surv(Time, Event) ~ ODX, data=df.MB.test, x=T)
+cp.test.ODXCat <- coxph(Surv(Time, Event) ~ as.factor(ODX_Cat), data=df.MB.test, x=T)
+
+cph.test.risk <- cph(Surv(Time, Event) ~ Risk, data=df.MB.test, x=T, y=T)
+cph.test.group <- cph(Surv(Time, Event) ~ Group, data=df.MB.test, x=T, y=T)
+cph.test.TC <- cph(Surv(Time, Event) ~ TransCONFIRM, data=df.MB.test, x=T, y=T)
+cph.test.SET <- cph(Surv(Time, Event) ~ SET, data=df.MB.test, x=T, y=T)
+cph.test.ODX <- cph(Surv(Time, Event) ~ ODX, data=df.MB.test, x=T, y=T)
+cph.test.ODXCat <- cph(Surv(Time, Event) ~ ODX_Cat, data=df.MB.test, x=T, y=T)
+
+set.seed(1)
+validate(cph.test.risk, method='boot', B=150)
+validate(cph.test.group, method='boot', B=150)
+validate(cph.test.TC, method='boot', B=150)
+validate(cph.test.SET, method='boot', B=150)
+validate(cph.test.ODX, method='boot', B=150)
+validate(cph.test.ODXCat, method='boot', B=150)
+
+```
+
+```{r METABRIC covariates}
+#Other classifiers 
+MB.annot.extra <- read.delim("./../Data/METABRIC/brca_metabric_clinical_data.tsv", header=T) 
+
+x <- match(colnames(metabric.s[, test.id]), MB.annot.extra$Patient.ID)
+df.MB.test <- data.frame(df.MB.test, 
+                        'TumorGrade'=MB.annot.extra$Neoplasm.Histologic.Grade[x],
+                        'MutationCount'=MB.annot.extra$Mutation.Count[x],
+                        'PAM50'=MB.annot.extra$Pam50...Claudin.low.subtype[x],
+                        'IntClust'=MB.annot.extra$Integrative.Cluster[x])
+
+cp.test.grade <- coxph(Surv(Time, Event) ~ TumorGrade, data=df.MB.test, x=T)
+cp.test.mutcount <- coxph(Surv(Time, Event) ~ MutationCount, data=df.MB.test, x=T)
+cp.test.PAM50 <- coxph(Surv(Time, Event) ~ PAM50, data=df.MB.test, x=T)
+cp.test.IntClust <- coxph(Surv(Time, Event) ~ IntClust, data=df.MB.test, x=T)
+
+cph.test.grade <- cph(Surv(Time, Event) ~ TumorGrade, data=df.MB.test, x=T, y=T)
+cph.test.mutcount <- cph(Surv(Time, Event) ~ MutationCount, data=df.MB.test, x=T, y=T)
+cph.test.PAM50 <- cph(Surv(Time, Event) ~ PAM50, data=df.MB.test, x=T, y=T)
+cph.test.IntClust <- cph(Surv(Time, Event) ~ IntClust, data=df.MB.test, x=T, y=T)
+
+set.seed(1)
+validate(cph.test.grade, method='boot', B=150)
+validate(cph.test.mutcount, method='boot', B=150)
+validate(cph.test.PAM50, method='boot', B=150)
+validate(cph.test.IntClust, method='boot', B=150)
+```
+
+```{r Proliferation index}
+######### Compare meta-PCNA proliferation signature -----------
+library(ProliferativeIndex)
+
+temp <- readDataForPI(data.frame(metabric.s[,test.id]), modelIDs = ENDORSE)
+test.PI <- calculatePI(temp)
+
+df.MB.test$PI <- test.PI
+
+cp.test.PI <- coxph(Surv(Time, Event) ~ PI, data=df.MB.test, x=T)
+cph.test.PI <- cph(Surv(Time, Event) ~ PI, data=df.MB.test, x=T, y=T)
+
+set.seed(1)
+validate(cph.test.PI, method='boot', B=150)
+
+```
+
+
+```{r Partial likelihood ratio tests}
+##### Cox models using Survival package ######
+cp.test.0 <- coxph(Surv(Time, Event) ~ ENDORSE, data=df.MB.test, x=T)
+cp.test.5 <- coxph(Surv(Time, Event) ~ HALLMARK_ESTROGEN_RESPONSE_EARLY, data=df.MB.test, x=T)
+cp.test.6 <- coxph(Surv(Time, Event) ~ ENDORSE + HALLMARK_ESTROGEN_RESPONSE_EARLY, data=df.MB.test, x=T) ### Chosen one
+
+library(nonnestcox)
+sink("./../Output/METABRIC_test_plrtest.txt")
+z1 <- which(!is.na(df.MB.test$TumorGrade))
+z2 <- which(!is.na(df.MB.test$MutationCount))
+cp.6_temp1 <- coxph(Surv(Time, Event) ~ ENDORSE + HALLMARK_ESTROGEN_RESPONSE_EARLY, data=df.MB.test[z1, ], x=T)
+cp.6_temp2 <- coxph(Surv(Time, Event) ~ ENDORSE + HALLMARK_ESTROGEN_RESPONSE_EARLY, data=df.MB.test[z2, ], x=T)
+cp.test.grade <- coxph(Surv(Time, Event) ~ TumorGrade, data=df.MB.test[z1, ], x=T)
+cp.test.mutcount <- coxph(Surv(Time, Event) ~ MutationCount, data=df.MB.test[z2, ], x=T)
+
+print("Grade"); plrtest(cp.6_temp1, cp.test.grade, nested=F)
+print("Mutation count"); plrtest(cp.6_temp2, cp.test.mutcount, nested=F)
+print("PAM50"); plrtest(cp.test.6, cp.test.PAM50, nested=F)
+print("IntClust"); plrtest(cp.test.6, cp.test.IntClust, nested=F)
+print("Proliferation index"); plrtest(cp.test.6, cp.test.PI, nested=F)
+
+print("TransConfirm"); plrtest(cp.test.6, cp.test.TC, nested=F)
+print("SET"); plrtest(cp.test.6, cp.test.SET, nested=F)
+print("ODX"); plrtest(cp.test.6, cp.test.ODX, nested=F)
+print("ODXCat"); plrtest(cp.test.6, cp.test.ODXCat, nested=F)
+sink()
+
+```
+
+```{r Plot corrected Dxy from validation}
+model.0 <- cph(Surv(Time, Event) ~ ENDORSE, data=df.MB.test, x=T, y=T, surv = T)
+model.5 <- cph(Surv(Time, Event) ~ HALLMARK_ESTROGEN_RESPONSE_EARLY, data=df.MB.test,
+               x=T, y=T, surv = T)
+model.6 <- cph(Surv(Time, Event) ~ ENDORSE + HALLMARK_ESTROGEN_RESPONSE_EARLY, data=df.MB.test, 
+               x=T, y=T, surv = T)
+
+v.list <- list()
+set.seed(1)
+v.list[[1]] <- validate(model.6, method='boot', B=150)
+v.list[[2]] <- validate(cph.test.grade, method='boot', B=150)
+v.list[[3]] <- validate(cph.test.mutcount, method='boot', B=150)
+v.list[[4]] <- validate(cph.test.PAM50, method='boot', B=150)
+v.list[[5]] <- validate(cph.test.IntClust, method='boot', B=150)
+v.list[[6]] <- validate(cph.test.PI, method='boot', B=150)
+v.list[[7]] <- validate(cph.test.TC, method='boot', B=150)
+v.list[[8]] <- validate(cph.test.SET, method='boot', B=150)
+v.list[[9]] <- validate(cph.test.ODX, method='boot', B=150)
+v.list[[10]] <- validate(cph.test.ODXCat, method='boot', B=150)
+
+# Create dataframe
+Labs <- c("ENDORSE", "Tumor grade", "Mutation count", "PAM50", "IntClust", "Proliferation index",
+          "TransCONFIRM", "SET", "ODX", "ODX25")
+
+df.val <- data.frame("Dxy" = unlist(lapply(v.list, "[", 1,5)), 
+                     "Labs" = factor(Labs, levels=rev(Labs)))
+
+# Horizontal version
+Pdxy <- ggplot(df.val, aes(x=Labs, y=Dxy)) +
+  geom_segment( aes(x=Labs, xend=Labs, y=0, yend=Dxy), color="skyblue", alpha=0.5) +
+  geom_point(color="orange", size=4) +
+  theme_bw(base_size = 12) +
+  coord_flip() +
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.x = element_blank(), 
+        panel.border = element_blank(), 
+        axis.ticks.y = element_blank()) +
+  labs(x="Prediction model", y="Corrected Dxy")
+
+pdf("./../Figures/METABRIC.test.Validate.Dxy.B150.pdf", height =  4, width=8)
+print(Pdxy)
+dev.off()
+
+```
+
+```{r TRAIN test annotation}
+SPLITS <- array(data=NA, dim=ncol(metabric.s))
+SPLITS[match(colnames(metabric.s)[TRAIN.id], MB.annot.extraV2$Patient.ID)] <- "Train"
+SPLITS[match(colnames(metabric.s)[test.id], MB.annot.extraV2$Patient.ID)] <- "Test"
+MB.annot.extraV2$SPLITS <- SPLITS
+
+t.test(MB.annot.extraV2$Tumor.Stage ~ MB.annot.extraV2$SPLITS)
+t.test(MB.annot.extraV2$Neoplasm.Histologic.Grade ~ MB.annot.extraV2$SPLITS)
+t.test(MB.annot.extraV2$Tumor.Size ~ MB.annot.extraV2$SPLITS)
+t.test(MB.annot.extraV2$Mutation.Count ~ MB.annot.extraV2$SPLITS)
+
+p1 <- ggplot(MB.annot.extraV2, aes(x=SPLITS, y=Tumor.Stage, fill=SPLITS)) +
+  geom_boxplot(width=0.5) +
+  #geom_jitter(width=0.1, alpha=0.15) + 
+  theme_classic(base_size = 14) +
+  theme(legend.position = 'none') +
+  scale_fill_brewer(palette = "Accent") +
+  labs(y="Stage", x="") 
+
+p2 <- ggplot(MB.annot.extraV2, aes(x=SPLITS, y=Neoplasm.Histologic.Grade, fill=SPLITS)) +
+  geom_boxplot(width=0.5) +
+  #geom_jitter(width=0.1, alpha=0.15) + 
+  theme_classic(base_size = 14) +
+  theme(legend.position = 'none') +
+  scale_fill_brewer(palette = "Accent") +
+  labs(y="Grade", x="") 
+
+p3 <- ggplot(MB.annot.extraV2, aes(x=SPLITS, y=Tumor.Size, fill=SPLITS)) +
+  geom_boxplot(width=0.5) +
+  #geom_jitter(width=0.1, alpha=0.15) + 
+  theme_classic(base_size = 14) +
+  theme(legend.position = 'none') +
+  scale_fill_brewer(palette = "Accent") +
+  labs(y="Size", x="") 
+
+p4 <- ggplot(MB.annot.extraV2, aes(x=SPLITS, y=Mutation.Count, fill=SPLITS)) +
+  geom_boxplot(width=0.5) +
+  #geom_jitter(width=0.1, alpha=0.15) + 
+  theme_classic(base_size = 14) +
+  theme(legend.position = 'none') +
+  scale_fill_brewer(palette = "Accent") +
+  labs(y="Mutation count", x="") 
+
+pdf("./../Figures/METABRIC.TRAIN_test_annot.pdf", width=6.5, height=2.5)
+gridExtra::grid.arrange(p1, p2, p3, p4, nrow=1)
+dev.off()
+
+```
+
+```{r Key pathways in METABRIC patients with ENDORSE > 1 and OS <5 or >5 years}
+metabric.hall <- readRDS("./../Data/METABRIC.HALLMARK.RDS")
+metabric.c2 <- readRDS("./../Data/METABRIC.C2.RDS")
+metabric.c6 <- readRDS("./../Data/METABRIC.C6.RDS")
+
+Ev1 <- na.omit(which(df.E2MB$Time < 60 & E2.risk >= 1))
+Ev2 <- na.omit(which(df.E2MB$Time >= 60 & E2.risk >= 1))
+Ev.labs <- array(dim=length(df.E2MB$Time))
+Ev.labs[Ev1] <- "E"
+Ev.labs[Ev2] <- "L"
+
+t.res <- function(X, labs) {
+  T.tests.p <- array(dim=ncol(X))
+  T.tests.fc <- array(dim=ncol(X))
+  
+  for (i in 1:ncol(X)) {
+    T.tests <- t.test(X[, i] ~ labs)  
+    T.tests.p[i] <- T.tests[[3]]
+    T.tests.fc[i] <- T.tests[[5]][2]/T.tests[[5]][1]
+  }
+  
+  T.tests.fdr <- p.adjust(T.tests.p, method = 'fdr')
+  return(data.frame("Name"=colnames(X), "p"=T.tests.p, "fdr"=T.tests.fdr, "fc"=T.tests.fc))
+}  
+
+Ev.hall.ts <- t.res(t(metabric.hall), Ev.labs)
+Ev.c2.ts <- t.res(t(metabric.c2), Ev.labs)
+Ev.c6.ts <- t.res(t(metabric.c6), Ev.labs)
+
+Ev.hall.ts[which(Ev.hall.ts$p < 0.05), ]
+Ev.c2.ts[which(Ev.c2.ts$p < 0.05), ]
+Ev.c6.ts[which(Ev.c6.ts$p < 0.05), ]
+
+write.csv(Ev.hall.ts, "./../Output/Ev.hall.ts.csv")
+write.csv(Ev.c2.ts, "./../Output/Ev.c2.ts.csv")
+write.csv(Ev.c6.ts, "./../Output/Ev.c6.ts.csv")
+
+```
+
