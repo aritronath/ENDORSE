@@ -60,6 +60,10 @@ metabric.hall <- METABRIC.H[, na.omit(match(metabric.annotV2$PATIENT_ID, colname
 metabric.c2 <- METABRIC.C2[, na.omit(match(metabric.annotV2$PATIENT_ID, colnames(METABRIC.C2)))]
 metabric.exp <- metabric[, na.omit(match(metabric.annotV2$PATIENT_ID, colnames(metabric)))]
 
+metabric.annotV2 <- metabric.annotV2[match(colnames(metabric.exp), metabric.annotV2$PATIENT_ID), ]
+metabric.annotV2$OS_EVENT <- gsub("LIVING", "0", metabric.annotV2$OS_STATUS)
+metabric.annotV2$OS_EVENT <- gsub("DECEASED", "1", metabric.annotV2$OS_EVENT)
+
 save(metabric.annotV2, MB.annot.extraV2, metabric.exp, file="./../Output/metabric_er.RData")
 save(metabric.c2, metabric.hall, file="./../Output/metabric.ssGSEA.RData")
 

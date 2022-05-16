@@ -31,7 +31,7 @@ colnames(gse130788.annot) <- c("Sample_time", "ER", "PR", "Group", "Response")
 ### Calculate ENDORSE risk scores -----------
 ENDORSE <- readRDS("./../Output/ENDORSE.RDS")
 
-gse130788.ssgsea <- gsva(t(gse130788.s), list("ENDORSE"=ENDORSE),
+gse130788.ssgsea <- gsva(t(gse130788.s), list("ENDORSE"=ENDORSE, "E2"=names(E2_geneset)),
                         verbose=TRUE, kcdf="Gaussian", method='ssgsea')
 gse130788.ssgsea[1,] <- ReScale(gse130788.ssgsea[1,])
 

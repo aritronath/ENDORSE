@@ -65,25 +65,19 @@ ENDORSE <- names(which(table(FS_ENDORSE) > 250)) # Define ENDORSE as genes in at
 saveRDS(ENDORSE, file="./../Output/ENDORSE.RDS")
 
 # Calculate ENDORSE enrichment score 
-MB.ENDORSE <- gsva(metabric.exp, gset.idx.list = list("ENDORSE"=ENDORSE), 
+MB.ENDORSE <- gsva(metabric.exp, gset.idx.list = list("ENDORSE"=ENDORSE, "E2"=ENDORSE_NO_PROL), 
                    method="ssgsea", kcdf="Gaussian")
-
-MakeRiskGrp <- function (risk.pred) {
-  risk.grps <- array(length(risk.pred))
-  risk.grps[which(risk.pred <= 1)] <- "Low Risk"
-  risk.grps[which(risk.pred > 1 & risk.pred < 2)] <- "Medium Risk"
-  risk.grps[which(risk.pred >= 2)] <- "High Risk"
-  risk.grps <- factor(risk.grps, levels=c("Low Risk", "Medium Risk", "High Risk"))
-  return(risk.grps)
-}
 
 df <- data.frame('Time'=metabric.annotV2$OS_MONTHS, 
                  'Event'=as.numeric(metabric.annotV2$OS_EVENT), 
                  'Age'=metabric.annotV2$AGE_AT_DIAGNOSIS,
-                 'ENDORSE'=MB.ENDORSE[1,])
+                 'ENDORSE'=MB.ENDORSE[1,], 
+                 'ENDORSE_NO_PROL'=MB.ENDORSE[2,])
 
-cfit = coxph(Surv(Time, Event) ~ Age + ENDORSE, data=df)
+cfit = coxph(Surv(Time, Event) ~ ENDORSE, data=df)
 saveRDS(cfit, file="./../Output/ENDORSE.CoxFit.RDS") 
+
+coxph(Surv(Time, Event) ~ ENDORSE_NO_PROL, data=df)
 
 res <- summary(cfit)
 
@@ -120,6 +114,7 @@ abline(v=c(1,2), lwd=2, lty=2, col="darkred")
 100 * sum(MB.risk >= 2) / length(MB.risk)
 100 * sum(MB.risk <= 1) / length(MB.risk)
 
+
 # Make histogram and ECDF of risk distribution 
 Plt[[1]] <- ggplot(data.frame(MB.risk), aes(MB.risk)) + 
   geom_histogram(color=NA, fill='#2D004E', bins=50) +  
@@ -144,6 +139,50 @@ pdf("./../Figures/METABRIC.CoxHistEcdf.pdf", width=8, height=4)
 egg::ggarrange(Plt[[1]], Plt[[2]], ncol=2)
 dev.off()
 
+# Heatmap of ENDORSE genes across patient samples grouped by risk strat
+library(RColorBrewer)
+library(ComplexHeatmap)
+column_ha = HeatmapAnnotation(#ENDORSE = anno_barplot(MB.ENDORSE[1,], gp = gpar(fill = "blue")), 
+                              Risk = anno_barplot(MB.risk, gp = gpar(col = "darkred")))
+Heatmap(t(scale(t(metabric.exp[ENDORSE, ]))), 
+        name = "Scaled expresssion", #title of legend
+        column_title = "METABRIC ER+ Breast Cancers", row_title = "ENDORSE genes",
+        show_column_names = FALSE,
+        row_names_gp = gpar(fontsize = 6), # Text size for row names
+        column_split = MB.risk.grps,
+        #column_order = sort(MB.risk),
+        col = brewer.pal(5, "PiYG"), 
+        top_annotation = column_ha)
+
+Heatmap(#t(scale(t(
+  metabric.hall,#))), 
+        name = "Hallmark GES", #title of legend
+        column_title = "METABRIC ER+ Breast Cancers", row_title = "ENDORSE genes",
+        show_column_names = FALSE,
+        row_names_gp = gpar(fontsize = 6), # Text size for row names
+        column_split = MB.risk.grps,
+        #column_order = sort(MB.risk),
+        col = brewer.pal(5, "PiYG"), 
+        top_annotation = column_ha)
+
+Heatmap(t(scale(t(metabric.exp[c("ESR1", "PGR", "GATA1", "GATA3") , ]))), 
+        name = "Scaled expression", #title of legend
+        column_title = "METABRIC ER+ Breast Cancers", row_title = "ENDORSE genes",
+        show_column_names = FALSE,
+        row_names_gp = gpar(fontsize = 6), # Text size for row names
+        column_split = MB.risk.grps,
+        #column_order = sort(MB.risk),
+        col = brewer.pal(5, "PiYG"), 
+        top_annotation = column_ha)
+
+coxph(Surv(metabric.annotV2$OS_MONTHS, as.numeric(metabric.annotV2$OS_EVENT)) ~ 
+        metabric.exp["ESR1", ])
+coxph(Surv(metabric.annotV2$OS_MONTHS, as.numeric(metabric.annotV2$OS_EVENT)) ~ 
+        metabric.exp["PGR", ])
+coxph(Surv(metabric.annotV2$OS_MONTHS, as.numeric(metabric.annotV2$OS_EVENT)) ~ 
+        metabric.exp["GATA1", ])
+coxph(Surv(metabric.annotV2$OS_MONTHS, as.numeric(metabric.annotV2$OS_EVENT)) ~ 
+        metabric.exp["GATA3", ])
 
 # 3. Simulate effects of dropouts ---------------------------------------
 # A.Perform analysis with dropouts in signature genes (probably should do a full transcriptome dropout)
@@ -373,130 +412,37 @@ print(P1)
 dev.off()
 
 ### PATHWAYS and MUTATIONS in RISK GROUPS ------------------------------
-cfit <- readRDS(file="./../Output/ENDORSE.CoxFit.RDS") 
-MB.risk <- predict(cfit, type='risk')
-MB.risk.grps <- MakeRiskGrp(MB.risk)
-names(MB.risk.grps) <- colnames(MBsc.ssgsea)
 
-## Somatic mutations with synonymous mutations removed ### 
-x <- match(metabric.mut$Tumor_Sample_Barcode, colnames(metabric.exp))
-MB.mut <- metabric.mut[which(!is.na(x)), ]
-length(unique(MB.mut$Hugo_Symbol)) #169
-
-y <- match(MB.mut$Tumor_Sample_Barcode, names(MB.risk.grps))
-MB.mut$RiskGroup <- MB.risk.grps[y]
-
-MBRisk.Mutation.Dist <- as.data.frame.matrix(table(MB.mut$Hugo_Symbol, MB.mut$RiskGroup))
-RiskN <- as.matrix(table(MB.risk.grps))
-MutF <- apply(MBRisk.Mutation.Dist, 1, function(x) 100*sum(x)/sum(RiskN))
-z <- which(MutF > 5)
-
-Fisher.Res <- array(dim=length(z))
-Chi.Res <- array(dim=length(z))
-for (i in 1:length(z)) {
-  # R1 = mut, R2 = no mut, C1 = Low/Med, C2 = High
-  R1.C1 = MBRisk.Mutation.Dist[z[i], 1] +  MBRisk.Mutation.Dist[z[i], 2]
-  R1.C2 = MBRisk.Mutation.Dist[z[i], 3]
-  R2.C1 = (RiskN[1] + RiskN[2]) - R1.C1
-  R2.C2 = RiskN[3] - R1.C2
-  
-  mat2 <- matrix(c(R1.C1, R2.C1, R1.C2, R2.C2), nrow=2)
-  Fisher.Res[i] <- fisher.test(mat2)$p.value
-  Chi.Res[i] <- chisq.test(mat2)$p.value
-  print(i)
-}
-
-k <- which(Chi.Res < 0.05)
-MBRisk.Mutation.Dist[z[k],]
-
-Col.Set <- list()
-Col.Set[[1]] <- c("#DF6868", "#803B3B")
-Col.Set[[2]] <- c("#B6DF68", "#68803B")
-Col.Set[[3]] <- c("#68DFD3", "#3B8078")
-Col.Set[[4]] <- c("#686FDF", "#3B4080")
-Col.Set[[5]] <- c("#DA68DF", "#7C3B80")
-
-pdf("./../Figures/METABRIC_MutF.pdf", width=8, height=4)
-par(mar=c(6.5,5.5,1,1), mfrow=c(1,5), cex.lab=1.5, cex.axis=1.5)
-i = 1
-f1 <- 100*(MBRisk.Mutation.Dist[z[k][i], 1] + MBRisk.Mutation.Dist[z[k][i], 2]) / (RiskN[1] + RiskN[2])
-f2 <- 100*(MBRisk.Mutation.Dist[z[k][i], 3]) / RiskN[3]
-print(c(f1, f2))
-barplot(c(f1, f2), width=0.5, space=0.25, col=Col.Set[[i]], border=NA, axes=F, ylim=c(0,60), ylab="Samples Mutated (%)")
-axis(side=2, at=c(0,10,20,30,40,50,60), lwd.ticks = 2, lwd = 2)
-axis(side=1, at=c(0.375,1), labels=c("Low/Med", "High"), lwd=0, las=2)
-
-for (i in 2:length(k)) {
-  f1 <- 100*(MBRisk.Mutation.Dist[z[k][i], 1] + MBRisk.Mutation.Dist[z[k][i], 2]) / (RiskN[1] + RiskN[2])
-  f2 <- 100*(MBRisk.Mutation.Dist[z[k][i], 3]) / RiskN[3]
-  print(c(f1, f2))
-  barplot(c(f1, f2), width=0.5, space=0.25, col=Col.Set[[i]], border=NA, axes=F, ylim=c(0,60))
-  #axis(side=2, at=c(0,10,20,30,40,50,60), lwd.ticks = 2, lwd = 2)
-  axis(side=1, at=c(0.375,1), labels=c("Low/Med", "High"), lwd=0, las=2)
-}
-dev.off()
-
-which(p.adjust(Chi.Res) < 0.05)
-MBRisk.Mutation.Dist[z[which(p.adjust(Chi.Res) < 0.05)],]
-
-write.csv(data.frame(MBRisk.Mutation.Dist[z,], "Chi.sq(P)"=Chi.Res, "FDR"=p.adjust(Chi.Res)), 
-          "./../Output/MBRiskMutationTable.csv")
-
-## CNAs ### 
-y <- match(colnames(MBsc.ssgsea), colnames(metabric.cnv))
-MB.cnv <- data.frame(metabric.cnv)[, which(!is.na(y))]
-rownames(MB.cnv) <- metabric.cnv$Hugo_Symbol
-
-# R1 = mut, R2 = no mut, C1 = Low/Med, C2 = High
-I_lm <- which(MB.risk.grps != "High Risk")
-I_h <- which(MB.risk.grps == "High Risk")
-
-MB.cnv <- na.omit(MB.cnv)
-CNV_Loss_Chi.Res <- array(dim=nrow(MB.cnv))
-CNV_Gain_Chi.Res <- array(dim=nrow(MB.cnv))
-for (i in 1:nrow(MB.cnv)) {
-  R1.C1 = sum(MB.cnv[i, I_lm] < 0)
-  R1.C2 = sum(MB.cnv[i, I_h] < 0)
-  R2.C1 = (RiskN[1] + RiskN[2]) - R1.C1
-  R2.C2 = RiskN[3] - R1.C2
-  
-  mat2 <- matrix(c(R1.C1, R2.C1, R1.C2, R2.C2), nrow=2)
-  CNV_Loss_Chi.Res[i] <- chisq.test(mat2)$p.value
-  print(i)
-}
-
-library(foreach)
-library(doParallel)
-
-CNV_Gain_Chi.Res <- foreach (i=1:nrow(MB.cnv), .combine='c') %dopar% {
-  R1.C1 = sum(MB.cnv[i, I_lm] > 0)
-  R1.C2 = sum(MB.cnv[i, I_h] > 0)
-  R2.C1 = (RiskN[1] + RiskN[2]) - R1.C1
-  R2.C2 = RiskN[3] - R1.C2
-  
-  mat2 <- matrix(c(R1.C1, R2.C1, R1.C2, R2.C2), nrow=2)
-  print(i)
-  return(chisq.test(mat2)$p.value)
-}
-
-length(which(CNV_Loss_Chi.Res < 0.05)) #831
-length(which(p.adjust(CNV_Loss_Chi.Res) < 0.05)) #0
-
-length(which(CNV_Gain_Chi.Res < 0.05)) #831
-length(which(p.adjust(CNV_Gain_Chi.Res) < 0.05)) #0
-
-
-## Curated and Hallmark pathways ### -------------------------------
-y <- match(colnames(MBsc.ssgsea), colnames(metabric.c2))
+############ Curated and Hallmark pathways ### ----------------------------------------------
+y <- match(colnames(metabric.s), colnames(metabric.c2))
 metabric.c2 <- metabric.c2[,y]
 
-y <- match(colnames(MBsc.ssgsea), colnames(metabric.c2))
+y <- match(colnames(metabric.s), colnames(metabric.c2))
 metabric.hall <- metabric.hall[,y]
 
-I_lm <- which(MB.risk.grps != "High Risk")
-I_h <- which(MB.risk.grps == "High Risk")
+## Continuous test
+CorFilter <- function(Xmat, Y, thresh=0.5, method='spearman') {
+  
+  Cor.tests <- apply(Xmat, 2, cor.test, Y, method=method)
+  
+  Cor.tests.p <- p.adjust(sapply(Cor.tests, "[", 3), method = 'fdr')
+  Cor.tests.r <- as.numeric(sapply(Cor.tests, "[", 4))
+  
+  Filt <- which(Cor.tests.p < 0.05 & abs(Cor.tests.r) > thresh)
+  
+  return(data.frame("Name"=colnames(Xmat)[Filt], "p"=Cor.tests.p[Filt], "r"=Cor.tests.r[Filt]))
+}
 
-MBRisk.hall.p <- apply(metabric.hall, 1, function (x) t.test(x[I_lm], x[I_h])$p.value)
+MB.hall.cors <- CorFilter(t(metabric.hall), E2.risk, thresh = 0.5)
+MB.c2.cors <- CorFilter(t(metabric.c2), E2.risk, thresh = 0.5)
+
+MB.c2.cors[grep("SIGNALING", MB.c2.cors$Name), ]
+
+MB.c2all.cors <- CorFilter(t(metabric.c2), E2.risk, thresh = 0.3)
+MB.c2all.cors[grep("SIGNALING", MB.c2all.cors$Name), ]
+
+## Binary test 
+MBRisk.hall.p <- apply(metabric.hall, 1, function (x) cor.test(x[I_lm], x[I_h])$p.value)
 MBRisk.c2.p  <- apply(metabric.c2, 1, function (x) t.test(x[I_lm], x[I_h])$p.value)
 
 MBRisk.hall.e <- apply(metabric.hall, 1, function (x) {
@@ -510,12 +456,12 @@ MBRisk.c2.e  <- apply(metabric.c2, 1, function (x)  {
 write.csv(data.frame("Effect"=MBRisk.hall.e, 
                      "P-value"=MBRisk.hall.p,
                      "FDR"=p.adjust(MBRisk.hall.p)),
-          file="./../Output/MBRisk.hall.csv")
+          file="./../Output/MBRisk.hall_v2.csv")
 
 write.csv(data.frame("Effect"=MBRisk.c2.e, 
                      "P-value"=MBRisk.c2.p,
                      "FDR"=p.adjust(MBRisk.c2.p)),
-          file="./../Output/MBRisk.c2.csv")
+          file="./../Output/MBRisk.c2_v2.csv")
 
 
 # Important pathways 
@@ -738,18 +684,24 @@ library(ProliferativeIndex)
 temp <- readDataForPI(data.frame(metabric.exp), modelIDs = ENDORSE)
 metabric.PI <- calculatePI(temp)
 
-summary(lm(MB.risk ~ metabric.PI))
-plot(MB.risk, metabric.PI)
-abline(lm(metabric.PI ~ MB.risk))
+summary(lm(E2.risk ~ metabric.PI))
+plot(E2.risk, metabric.PI); abline(lm(metabric.PI ~ E2.risk))
+boxplot(metabric.PI ~ E2.risk.grps)
 
 df <- data.frame("Time"=as.numeric(metabric.annotV2$OS_MONTHS),
                  "Event"=as.numeric(metabric.annotV2$OS_EVENT),
-                 "RiskGroup"=MB.risk.grps, 
-                 "Risk"=MB.risk, 
+                 "RiskGroup"=E2.risk.grps, 
+                 "Risk"=E2.risk, 
+                 "KI67"=metabric.exp["MKI67",],
                  "PI"=metabric.PI)
 
-F1 <- coxph(Surv(Time, Event) ~ PI + RiskGroup, data=df)
-F2 <- coxph(Surv(Time, Event) ~ PI + Risk, data=df)
+F1 <- coxph(Surv(Time, Event) ~ Risk, data=df, x=T)
+F2 <- coxph(Surv(Time, Event) ~ PI, data=df, x=T)
+plrtest(F1, F2, nested = F)
+
+
+F3 <- coxph(Surv(Time, Event) ~ KI67, data=df, x=T)
+plrtest(F1, F3, nested = F)
 
 CoxExport(F1, fname="./../Output/METABRIC.ProlIndex1.cfit.csv")
 CoxExport(F2, fname="./../Output/METABRIC.ProlIndex2.cfit.csv")
