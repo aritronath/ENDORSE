@@ -1,5 +1,7 @@
 # ENDORSE v1.0: Endocrine resistance signature model for estrogen receptor-positive (ER+) breast cancers
 
+### Licence: Copyright 2021, City of Hope. All rights reserved – no licenses are granted by this publication
+
 ## The ENDORSE model predicts risk of death on endocrine therapy using gene expression profiles from tumors. 
 
 #### This repository contains scripts for developing the ENDORSE model using METABRIC training data. Additional scripts for independent validation of the model are also included. Follow the instructions below to apply ENDORSE to calculate risk: 
